@@ -1,5 +1,7 @@
-import tensorflow as tf
-import tensorflow.contrib.slim as slim
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
+#import tensorflow as tf
+import tf_slim as slim
 import numpy as np
 import os,time,cv2,scipy.io,random
 from PIL import Image

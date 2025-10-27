@@ -9,7 +9,9 @@ import os
 import scipy.io
 import scipy.stats as st
 import sys
-import tensorflow as tf
+# import tensorflow as tf
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 import time
 
 EPS = 1e-12

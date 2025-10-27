@@ -1,12 +1,14 @@
 from __future__ import division
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 import os,time,cv2,scipy.io
 import tensorflow as tf
-import tensorflow.contrib.slim as slim
+import tf_slim as slim # import tensorflow.contrib.slim as slim
 import numpy as np
 import matplotlib.pyplot as plt
 from networks import build_discriminator
-from skimage.measure import compare_ssim as ssim
-from skimage.measure import compare_psnr as psnr
+from skimage.metrics import structural_similarity as ssim
+from skimage.metrics import peak_signal_noise_ratio as psnr
 from networks import *
 from utils import *
 import scipy.stats as st

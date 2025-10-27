@@ -33,12 +33,14 @@ if __name__ == '__main__':
     if not os.path.isdir(ARGS.result_dir):
         os.makedirs(ARGS.result_dir)
         
-    for image_filename in glob.glob(ARGS.input_dir+'/*.jpg'):
+    # Process both jpg and png files
+    image_files = glob.glob(ARGS.input_dir+'/*.jpg') + glob.glob(ARGS.input_dir+'/*.png')
+    for image_filename in image_files:
         img = cv2.imread( image_filename, -1)
         test_w = int(img.shape[1]* test_h/float(img.shape[0]))
         img = prepare_image(img, test_w, test_h)
         oimg = deshadower.run(img)
-        
+
         if not os.path.isdir(ARGS.result_dir):
             os.makedirs(ARGS.result_dir)
         output_filename = "%s/%s.png"%(ARGS.result_dir, os.path.splitext(os.path.basename(image_filename))[0])

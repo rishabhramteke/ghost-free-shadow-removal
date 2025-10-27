@@ -1,7 +1,10 @@
-import tensorflow as tf
-import tensorflow.contrib.slim as slim
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
+#import tensorflow as tf
+import tf_slim as slim # import tensorflow.contrib.slim as slim
 import numpy as np
 import os,time,cv2,scipy.io
+from tensorflow.keras import layers, initializers, activations
 
 
 def identity_initializer():
@@ -22,7 +25,21 @@ def relu(x):
 def nm(x):
     w0=tf.Variable(1.0,name='w0')
     w1=tf.Variable(0.0,name='w1')
-    return w0*x+w1*slim.batch_norm(x)
+
+    # TF1-compatible batch normalization matching checkpoint format
+    channels = x.get_shape()[-1]
+    with tf.variable_scope(None, default_name='BatchNorm'):
+        beta = tf.get_variable('beta', [channels], dtype=tf.float32,
+                              initializer=tf.zeros_initializer())
+        # No gamma - checkpoint doesn't have it (scale=False in original)
+        moving_mean = tf.get_variable('moving_mean', [channels], dtype=tf.float32,
+                                     initializer=tf.zeros_initializer(), trainable=False)
+        moving_variance = tf.get_variable('moving_variance', [channels], dtype=tf.float32,
+                                         initializer=tf.ones_initializer(), trainable=False)
+        # Use moving stats (training=False mode)
+        bn = tf.nn.batch_normalization(x, moving_mean, moving_variance, beta, None, variance_epsilon=1e-5)
+
+    return w0*x + w1*bn
 
 def build_net(ntype,nin,nwb=None,name=None):
     if ntype=='conv':
@@ -49,29 +66,40 @@ def identity_initializer():
 
 
 def se_block(input_feature, name, ratio=8):
-    
-    kernel_initializer = tf.contrib.layers.variance_scaling_initializer()
-    bias_initializer = tf.constant_initializer(value=0.0)
+    """
+    Squeeze-and-Excitation (SE) block - TF1-compatible with proper variable scoping
+    """
+    # Ensure channel is an integer
+    channel = input_feature.shape[-1]
+    if channel is None:  # dynamic channel dimension
+        channel = tf.shape(input_feature)[-1]
+    else:
+        channel = int(channel)
+
     with tf.variable_scope(name):
-        channel = input_feature.get_shape()[-1]
         # Global average pooling
-        squeeze = tf.reduce_mean(input_feature, axis=[1,2], keepdims=True)   
-        assert squeeze.get_shape()[1:] == (1,1,channel)
-        excitation = tf.layers.dense(inputs=squeeze,
-                                 units=channel//ratio,
-                                 activation=tf.nn.relu,
-                                 kernel_initializer=kernel_initializer,
-                                 bias_initializer=bias_initializer,
-                                 name='bottleneck_fc')   
-        assert excitation.get_shape()[1:] == (1,1,channel//ratio)
-        excitation = tf.layers.dense(inputs=excitation,
-                                 units=channel,
-                                 activation=tf.nn.sigmoid,
-                                 kernel_initializer=kernel_initializer,
-                                 bias_initializer=bias_initializer,
-                                 name='recover_fc')    
-        assert excitation.get_shape()[1:] == (1,1,channel)
-        scale = input_feature * excitation    
+        squeeze = tf.reduce_mean(input_feature, axis=[1, 2], keepdims=True)
+
+        # Bottleneck fully connected layer using TF1 operations
+        with tf.variable_scope('bottleneck_fc'):
+            kernel1 = tf.get_variable('kernel', [channel, channel // ratio],
+                                     initializer=tf.variance_scaling_initializer())
+            bias1 = tf.get_variable('bias', [channel // ratio],
+                                   initializer=tf.zeros_initializer())
+            squeeze_reshaped = tf.reshape(squeeze, [-1, channel])
+            excitation = tf.nn.relu(tf.matmul(squeeze_reshaped, kernel1) + bias1)
+
+        # Recover channel dimension
+        with tf.variable_scope('recover_fc'):
+            kernel2 = tf.get_variable('kernel', [channel // ratio, channel],
+                                     initializer=tf.variance_scaling_initializer())
+            bias2 = tf.get_variable('bias', [channel],
+                                   initializer=tf.zeros_initializer())
+            excitation = tf.nn.sigmoid(tf.matmul(excitation, kernel2) + bias2)
+            excitation = tf.reshape(excitation, [-1, 1, 1, channel])
+
+    # Scale input feature
+    scale = input_feature * excitation  # broadcasting over H, W
     return scale
 
 def build_vgg19(input,vgg_path,reuse=False):
@@ -106,29 +134,55 @@ def build_vgg19(input,vgg_path,reuse=False):
         return net
 
 
-def spp(net,channel=64,scope='g_pool'):
+def spp(net, channel=64, scope='g_pool'):
+    """SPP block – TF1 variable names preserved, flat naming like g_imgpool2, g_imgpool8, etc."""
 
-    # here we build the pooling stack
-    net_2 = tf.layers.average_pooling2d(net,pool_size=4,strides=4,padding='same')
-    net_2 = slim.conv2d(net_2,channel,[1,1],activation_fn=lrelu,normalizer_fn=nm,weights_initializer=identity_initializer(),scope=scope+'2')
+    # Pooling helper
+    def avg_pool(x, k):
+        return tf.nn.avg_pool(
+            x,
+            ksize=[1, k, k, 1],
+            strides=[1, k, k, 1],
+            padding='SAME'
+        )
 
-    net_8 = tf.layers.average_pooling2d(net,pool_size=8,strides=8,padding='same')
-    net_8 = slim.conv2d(net_8,channel,[1,1],activation_fn=lrelu,normalizer_fn=nm,weights_initializer=identity_initializer(),scope=scope+'8')
+    # Create flat scope names matching checkpoint: g_imgpool2, g_imgpool8, etc.
+    net_2  = slim.conv2d(avg_pool(net, 4),  channel, [1, 1],
+                         activation_fn=lrelu, normalizer_fn=nm,
+                         weights_initializer=identity_initializer(),
+                         scope=scope+'2')
 
-    net_16 = tf.layers.average_pooling2d(net,pool_size=16,strides=16,padding='same')
-    net_16 = slim.conv2d(net_16,channel,[1,1],activation_fn=lrelu,normalizer_fn=nm,weights_initializer=identity_initializer(),scope=scope+'16')
+    net_8  = slim.conv2d(avg_pool(net, 8),  channel, [1, 1],
+                         activation_fn=lrelu, normalizer_fn=nm,
+                         weights_initializer=identity_initializer(),
+                         scope=scope+'8')
 
-    net_32 = tf.layers.average_pooling2d(net,pool_size=32,strides=32,padding='same')
-    net_32 = slim.conv2d(net_32,channel,[1,1],activation_fn=lrelu,normalizer_fn=nm,weights_initializer=identity_initializer(),scope=scope+'32')
+    net_16 = slim.conv2d(avg_pool(net, 16), channel, [1, 1],
+                         activation_fn=lrelu, normalizer_fn=nm,
+                         weights_initializer=identity_initializer(),
+                         scope=scope+'16')
 
+    net_32 = slim.conv2d(avg_pool(net, 32), channel, [1, 1],
+                         activation_fn=lrelu, normalizer_fn=nm,
+                         weights_initializer=identity_initializer(),
+                         scope=scope+'32')
+
+    # Resize + concat
+    h, w = tf.shape(net)[1], tf.shape(net)[2]
     net = tf.concat([
-      tf.image.resize_bilinear(net_2,(tf.shape(net)[1],tf.shape(net)[2])),
-      tf.image.resize_bilinear(net_8,(tf.shape(net)[1],tf.shape(net)[2])),
-      tf.image.resize_bilinear(net_16,(tf.shape(net)[1],tf.shape(net)[2])),
-      tf.image.resize_bilinear(net_32,(tf.shape(net)[1],tf.shape(net)[2])),
-      net],axis=3)
+        tf.image.resize_bilinear(net_2,  (h, w)),
+        tf.image.resize_bilinear(net_8,  (h, w)),
+        tf.image.resize_bilinear(net_16, (h, w)),
+        tf.image.resize_bilinear(net_32, (h, w)),
+        net
+    ], axis=3)
 
-    net=slim.conv2d(net,channel,[3,3],rate=1,activation_fn=lrelu,normalizer_fn=nm,weights_initializer=identity_initializer(),scope=scope+'sf')
+    net = slim.conv2d(net, channel, [3, 3],
+                      rate=1,
+                      activation_fn=lrelu,
+                      normalizer_fn=nm,
+                      weights_initializer=identity_initializer(),
+                      scope=scope+'sf')
 
     return net
 
