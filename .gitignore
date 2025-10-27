@@ -10,3 +10,5 @@ __pycache__/
 Models/*
 tests/
 outputs/
+test/
+output/
