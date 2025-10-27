@@ -1,3 +1,5 @@
+/tests/
+/outputs/
 Models/*.mat
 Models/*/*.*
 .ipynb_checkpoints/
@@ -6,3 +8,5 @@ __pycache__/
 *.zip
 
 Models/*
+tests/
+outputs/
